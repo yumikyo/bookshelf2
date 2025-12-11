@@ -4,6 +4,7 @@ import os
 import base64
 import json
 import glob
+import time  # ←これを一番上に移動しました！
 import streamlit.components.v1 as components
 
 # ==========================================
@@ -48,7 +49,8 @@ with st.sidebar:
             with open(save_path, "wb") as f:
                 f.write(zfile.getbuffer())
         st.success(f"{len(uploaded_zips)}冊を追加しました！")
-        # 画面を更新してリストに反映
+        
+        # 画面を更新してリストに反映（ここでエラーが出ていました）
         time.sleep(1) 
         st.rerun()
 
@@ -66,6 +68,7 @@ with st.sidebar:
             for f in files_to_delete:
                 os.remove(os.path.join(LIBRARY_DIR, f))
             st.success("削除しました")
+            time.sleep(1)
             st.rerun()
 
 # フォルダから現在の本棚リストを作成
@@ -108,7 +111,7 @@ def render_custom_player(shop_name):
     
     playlist_json = json.dumps(playlist_data, ensure_ascii=False)
 
-    # 2. HTMLテンプレート（波括弧のエラーを防ぐため、変数部分は __VAR__ にしています）
+    # 2. HTMLテンプレート
     html_template = """
     <!DOCTYPE html>
     <html>
@@ -224,7 +227,7 @@ def render_custom_player(shop_name):
     </html>
     """
     
-    # Python変数をJSに埋め込む（安全な置換）
+    # Python変数をJSに埋め込む
     final_html = html_template.replace("__PLAYLIST_JSON__", playlist_json)
     
     st.components.v1.html(final_html, height=600)
@@ -232,7 +235,6 @@ def render_custom_player(shop_name):
 # ==========================================
 # 4. 画面表示切り替え
 # ==========================================
-import time # ファイル保存後のリロード用
 
 if st.session_state.selected_shop:
     shop_name = st.session_state.selected_shop
@@ -272,7 +274,6 @@ else:
 
     # リスト表示
     for shop_name in filtered_shops:
-        # カード風のデザインでボタンを表示
         if st.button(f"📖 {shop_name} を開く", use_container_width=True):
             st.session_state.selected_shop = shop_name
             st.rerun()
