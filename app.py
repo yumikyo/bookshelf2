@@ -3,6 +3,7 @@ import zipfile
 import base64
 import json
 import os
+import re
 import streamlit.components.v1 as components
 
 # ページ設定
@@ -18,21 +19,28 @@ st.markdown("""
 
 st.title("🎧 My Menu Book")
 
-# データ管理（メモリ保存）
+# データ管理
 if 'my_library' not in st.session_state:
     st.session_state.my_library = {}
 
 # --- サイドバー：本の追加 ---
 with st.sidebar:
     st.header("➕ 本の追加")
-    st.info("生成アプリで作ったZIPファイルをここで登録します。")
+    st.info("生成アプリで作ったZIPファイルを登録します。")
     
     uploaded_zips = st.file_uploader("ZIPファイルをドロップ", type="zip", accept_multiple_files=True)
     
     if uploaded_zips:
         for zfile in uploaded_zips:
-            store_name = os.path.splitext(zfile.name)[0].replace("_", " ")
+            # ファイル名から店名をきれいに抽出する処理
+            # 例: "中国料理八八_20251212.zip" -> "中国料理八八"
+            filename = os.path.splitext(zfile.name)[0]
+            # 日付（数字8桁など）や余計な記号を削除して店名だけにする
+            store_name = re.sub(r'_\d{8}.*', '', filename).replace("_", " ")
+            
+            # 辞書に保存（キーを店名、値をファイルオブジェクトに）
             st.session_state.my_library[store_name] = zfile
+            
         st.success(f"{len(uploaded_zips)}冊を追加しました！")
 
     st.divider()
@@ -45,27 +53,58 @@ with st.sidebar:
 def render_player(shop_name):
     zfile = st.session_state.my_library[shop_name]
     playlist_data = []
+    map_url = None # 地図URL用
 
     try:
         with zipfile.ZipFile(zfile) as z:
             file_list = sorted(z.namelist())
+            
+            # HTMLファイルの中から地図URLを探す（もしあれば）
+            for f in file_list:
+                if f.endswith(".html"):
+                    try:
+                        html_content = z.read(f).decode('utf-8')
+                        # HTML内のGoogleマップリンクを探す簡易的な処理
+                        match = re.search(r'href="(https://.*?maps.*?)"', html_content)
+                        if match:
+                            map_url = match.group(1)
+                    except: pass
+
+            # 音声ファイルの読み込み
             for f in file_list:
                 if f.endswith(".mp3"):
                     data = z.read(f)
                     b64_data = base64.b64encode(data).decode()
                     title = f.replace(".mp3", "").replace("_", " ")
+                    # 先頭の数字（01_など）を見やすく整形
+                    title = re.sub(r'^\d{2}\s*', '', title) 
                     playlist_data.append({"title": title, "src": f"data:audio/mp3;base64,{b64_data}"})
+                    
     except Exception as e:
         st.error(f"ファイルの読み込みエラー: {e}"); return
 
     playlist_json = json.dumps(playlist_data, ensure_ascii=False)
 
-    # HTMLテンプレート（アイコンと速度の修正版）
+    # 地図ボタンHTML（URLが見つかった場合のみ表示）
+    map_btn_html = ""
+    if map_url:
+        map_btn_html = f"""
+        <div style="margin: 15px 0;">
+            <a href="{map_url}" target="_blank" style="text-decoration:none;">
+                <button style="
+                    width:100%; padding:10px; background:#4285F4; color:white; 
+                    border:none; border-radius:8px; font-weight:bold; cursor:pointer;">
+                    🗺️ Googleマップを開く
+                </button>
+            </a>
+        </div>
+        """
+
     html_template = """<!DOCTYPE html><html><head><style>
         .player-container { border: 2px solid #e0e0e0; border-radius: 15px; padding: 20px; background-color: #f9f9f9; text-align: center; }
         .track-title { font-size: 20px; font-weight: bold; color: #333; margin-bottom: 15px; padding: 10px; background: #fff; border-radius: 8px; border-left: 5px solid #ff4b4b; }
         .controls { display: flex; gap: 10px; margin: 15px 0; }
-        button { flex: 1; padding: 15px; font-size: 18px; font-weight: bold; color: white; background-color: #ff4b4b; border: none; border-radius: 8px; cursor: pointer; }
+        button.ctrl-btn { flex: 1; padding: 15px; font-size: 18px; font-weight: bold; color: white; background-color: #ff4b4b; border: none; border-radius: 8px; cursor: pointer; }
         .track-list { margin-top: 20px; text-align: left; max-height: 250px; overflow-y: auto; border-top: 1px solid #ddd; padding-top: 10px; }
         .track-item { padding: 10px; border-bottom: 1px solid #eee; cursor: pointer; }
         .track-item.active { background-color: #ffecec; font-weight: bold; color: #ff4b4b; }
@@ -75,10 +114,12 @@ def render_player(shop_name):
         <audio id="audio" controls style="width:100%"></audio>
         
         <div class="controls">
-            <button onclick="prev()">⏮</button>
-            <button onclick="toggle()" id="pb">▶ / ⏸</button>
-            <button onclick="next()">⏭</button>
+            <button class="ctrl-btn" onclick="prev()">⏮</button>
+            <button class="ctrl-btn" onclick="toggle()" id="pb">▶ / ⏸</button>
+            <button class="ctrl-btn" onclick="next()">⏭</button>
         </div>
+        
+        __MAP_BUTTON__
         
         <div style="text-align:center; margin-top:10px;">
             速度: <select id="speed" onchange="spd()">
@@ -93,60 +134,23 @@ def render_player(shop_name):
     </div>
     <script>
         const pl = __PLAYLIST__; let idx = 0;
-        const au = document.getElementById('audio'); const ti = document.getElementById('title'); const pb = document.getElementById('play-btn'); const ls = document.getElementById('list');
-        const btn = document.getElementById('pb'); // ボタン要素を取得
-        
+        const au = document.getElementById('audio'); const ti = document.getElementById('title'); const btn = document.getElementById('pb'); const ls = document.getElementById('list');
         function init() { render(); load(0); spd(); }
-        
-        function load(i) { 
-            idx = i; 
-            au.src = pl[idx].src; 
-            ti.innerText = pl[idx].title; 
-            highlight(); 
-            spd(); 
-        }
-        
-        function toggle() { 
-            if (au.paused) {
-                au.play();
-                btn.innerText = "⏸"; // 再生中は一時停止マーク
-            } else {
-                au.pause();
-                btn.innerText = "▶"; // 停止中は再生マーク
-            }
-        }
-        
+        function load(i) { idx = i; au.src = pl[idx].src; ti.innerText = pl[idx].title; highlight(); spd(); }
+        function toggle() { if(au.paused){au.play(); btn.innerText="⏸";} else {au.pause(); btn.innerText="▶";} }
         function next() { if(idx < pl.length-1) { load(idx+1); au.play(); btn.innerText="⏸"; } }
         function prev() { if(idx > 0) { load(idx-1); au.play(); btn.innerText="⏸"; } }
-        
         function spd() { au.playbackRate = parseFloat(document.getElementById('speed').value); }
-        
-        // 曲が終わったら次へ
         au.onended = function() { idx < pl.length-1 ? next() : btn.innerText="▶"; };
-        
-        function render() { 
-            ls.innerHTML = ""; 
-            pl.forEach((t, i) => { 
-                const d = document.createElement('div'); 
-                d.className = "track-item"; 
-                d.id = "tr-" + i; 
-                d.innerText = (i+1) + ". " + t.title; 
-                d.onclick = () => { load(i); au.play(); btn.innerText="⏸"; }; 
-                ls.appendChild(d); 
-            }); 
-        }
-        
-        function highlight() { 
-            document.querySelectorAll('.track-item').forEach(e => e.classList.remove('active')); 
-            const el = document.getElementById("tr-" + idx); 
-            if(el) { el.classList.add('active'); el.scrollIntoView({behavior:'smooth', block:'nearest'}); } 
-        }
+        function render() { ls.innerHTML = ""; pl.forEach((t, i) => { const d = document.createElement('div'); d.className = "track-item"; d.id = "tr-" + i; d.innerText = (i+1) + ". " + t.title; d.onclick = () => { load(i); au.play(); btn.innerText="⏸"; }; ls.appendChild(d); }); }
+        function highlight() { document.querySelectorAll('.track-item').forEach(e => e.classList.remove('active')); const el = document.getElementById("tr-" + idx); if(el) { el.classList.add('active'); el.scrollIntoView({behavior:'smooth', block:'nearest'}); } }
         init();
     </script></body></html>"""
     
-    st.components.v1.html(html_template.replace("__PLAYLIST__", playlist_json), height=550)
+    final_html = html_template.replace("__PLAYLIST__", playlist_json).replace("__MAP_BUTTON__", map_btn_html)
+    st.components.v1.html(final_html, height=600)
 
-# --- 画面切り替え ---
+# --- 画面表示 ---
 if 'selected_shop' not in st.session_state:
     st.session_state.selected_shop = None
 
@@ -163,10 +167,11 @@ else:
     search_query = st.text_input("🔍 お店を検索", placeholder="例: カフェ")
     if not st.session_state.my_library:
         st.info("👈 左のサイドバーにZIPファイルをアップロードしてください。")
+    
     shop_list = list(st.session_state.my_library.keys())
     if search_query:
         shop_list = [name for name in shop_list if search_query in name]
+    
     for shop_name in shop_list:
-        if st.button(f"📖 {shop_name} を開く", use_container_width=True):
-            st.session_state.selected_shop = shop_name
-            st.rerun()
+        # リストのボタン表示を店名だけにシンプル化
+        if st.button(f"📖 {shop
