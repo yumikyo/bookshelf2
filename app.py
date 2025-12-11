@@ -60,6 +60,7 @@ def render_player(shop_name):
 
     playlist_json = json.dumps(playlist_data, ensure_ascii=False)
 
+    # HTMLテンプレート（アイコンと速度の修正版）
     html_template = """<!DOCTYPE html><html><head><style>
         .player-container { border: 2px solid #e0e0e0; border-radius: 15px; padding: 20px; background-color: #f9f9f9; text-align: center; }
         .track-title { font-size: 20px; font-weight: bold; color: #333; margin-bottom: 15px; padding: 10px; background: #fff; border-radius: 8px; border-left: 5px solid #ff4b4b; }
@@ -72,22 +73,74 @@ def render_player(shop_name):
     <div class="player-container">
         <div class="track-title" id="title">Loading...</div>
         <audio id="audio" controls style="width:100%"></audio>
-        <div class="controls"><button onclick="prev()">⏮</button><button onclick="toggle()" id="pb">▶</button><button onclick="next()">⏭</button></div>
-        <div style="text-align:center; margin-top:10px;">速度: <select id="speed" onchange="spd()"><option value="1.0">1.0</option><option value="1.4" selected>1.4</option><option value="2.0">2.0</option></select></div>
+        
+        <div class="controls">
+            <button onclick="prev()">⏮</button>
+            <button onclick="toggle()" id="pb">▶ / ⏸</button>
+            <button onclick="next()">⏭</button>
+        </div>
+        
+        <div style="text-align:center; margin-top:10px;">
+            速度: <select id="speed" onchange="spd()">
+                <option value="0.8">0.8 (ゆっくり)</option>
+                <option value="1.0" selected>1.0 (標準)</option>
+                <option value="1.2">1.2 (少し速く)</option>
+                <option value="1.5">1.5 (速く)</option>
+            </select>
+        </div>
+        
         <div class="track-list" id="list"></div>
     </div>
     <script>
         const pl = __PLAYLIST__; let idx = 0;
         const au = document.getElementById('audio'); const ti = document.getElementById('title'); const pb = document.getElementById('play-btn'); const ls = document.getElementById('list');
+        const btn = document.getElementById('pb'); // ボタン要素を取得
+        
         function init() { render(); load(0); spd(); }
-        function load(i) { idx = i; au.src = pl[idx].src; ti.innerText = pl[idx].title; highlight(); spd(); }
-        function toggle() { au.paused ? (au.play(), pb.innerText="⏸") : (au.pause(), pb.innerText="▶"); }
-        function next() { if(idx < pl.length-1) { load(idx+1); au.play(); pb.innerText="⏸"; } }
-        function prev() { if(idx > 0) { load(idx-1); au.play(); pb.innerText="⏸"; } }
+        
+        function load(i) { 
+            idx = i; 
+            au.src = pl[idx].src; 
+            ti.innerText = pl[idx].title; 
+            highlight(); 
+            spd(); 
+        }
+        
+        function toggle() { 
+            if (au.paused) {
+                au.play();
+                btn.innerText = "⏸"; // 再生中は一時停止マーク
+            } else {
+                au.pause();
+                btn.innerText = "▶"; // 停止中は再生マーク
+            }
+        }
+        
+        function next() { if(idx < pl.length-1) { load(idx+1); au.play(); btn.innerText="⏸"; } }
+        function prev() { if(idx > 0) { load(idx-1); au.play(); btn.innerText="⏸"; } }
+        
         function spd() { au.playbackRate = parseFloat(document.getElementById('speed').value); }
-        au.onended = function() { idx < pl.length-1 ? next() : pb.innerText="▶"; };
-        function render() { ls.innerHTML = ""; pl.forEach((t, i) => { const d = document.createElement('div'); d.className = "track-item"; d.id = "tr-" + i; d.innerText = (i+1) + ". " + t.title; d.onclick = () => { load(i); au.play(); pb.innerText="⏸"; }; ls.appendChild(d); }); }
-        function highlight() { document.querySelectorAll('.track-item').forEach(e => e.classList.remove('active')); const el = document.getElementById("tr-" + idx); if(el) { el.classList.add('active'); el.scrollIntoView({behavior:'smooth', block:'nearest'}); } }
+        
+        // 曲が終わったら次へ
+        au.onended = function() { idx < pl.length-1 ? next() : btn.innerText="▶"; };
+        
+        function render() { 
+            ls.innerHTML = ""; 
+            pl.forEach((t, i) => { 
+                const d = document.createElement('div'); 
+                d.className = "track-item"; 
+                d.id = "tr-" + i; 
+                d.innerText = (i+1) + ". " + t.title; 
+                d.onclick = () => { load(i); au.play(); btn.innerText="⏸"; }; 
+                ls.appendChild(d); 
+            }); 
+        }
+        
+        function highlight() { 
+            document.querySelectorAll('.track-item').forEach(e => e.classList.remove('active')); 
+            const el = document.getElementById("tr-" + idx); 
+            if(el) { el.classList.add('active'); el.scrollIntoView({behavior:'smooth', block:'nearest'}); } 
+        }
         init();
     </script></body></html>"""
     
