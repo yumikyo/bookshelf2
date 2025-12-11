@@ -1,8 +1,8 @@
 import streamlit as st
 import zipfile
 import os
-import io
 import base64
+import json
 
 # ==========================================
 # ページ設定
@@ -11,30 +11,9 @@ st.set_page_config(page_title="Menu Bookshelf", layout="centered")
 
 st.markdown("""
 <style>
-    /* ボタンを大きく押しやすく */
-    .stButton > button {
-        width: 100%;
-        height: 3.5em;
-        font-size: 20px !important;
-        font-weight: bold;
-        margin-bottom: 10px;
-        border-radius: 10px;
-    }
-    /* 再生中のタイトル装飾 */
-    .playing-title {
-        font-size: 24px;
-        font-weight: bold;
-        color: #e63946;
-        padding: 10px;
-        border: 2px solid #e63946;
-        border-radius: 10px;
-        text-align: center;
-        margin-bottom: 20px;
-        background-color: #fff5f5;
-    }
-    audio {
-        width: 100%;
-        margin-bottom: 20px;
+    /* 全体のフォント調整 */
+    body {
+        font-family: sans-serif;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -42,7 +21,7 @@ st.markdown("""
 st.title("🎧 メニュー本棚")
 
 # ==========================================
-# 1. データ準備・設定
+# 1. データ準備（ZIP管理）
 # ==========================================
 with st.expander("管理者メニュー：ZIPファイルの追加"):
     uploaded_zips = st.file_uploader(
@@ -50,9 +29,6 @@ with st.expander("管理者メニュー：ZIPファイルの追加"):
         type="zip", 
         accept_multiple_files=True
     )
-
-st.sidebar.header("🔊 設定")
-playback_speed = st.sidebar.slider("再生速度", 0.5, 2.0, 1.4, 0.1)
 
 bookshelf = {}
 if uploaded_zips:
@@ -66,138 +42,297 @@ if uploaded_zips:
 # ==========================================
 if 'selected_shop' not in st.session_state:
     st.session_state.selected_shop = None
-if 'current_track_idx' not in st.session_state:
-    st.session_state.current_track_idx = 0
-if 'playlist' not in st.session_state:
-    st.session_state.playlist = [] 
-# 自動再生の状態管理（Trueなら再生、Falseなら停止）
-if 'is_playing' not in st.session_state:
-    st.session_state.is_playing = True
 
 # ==========================================
-# 3. ロジック関数
+# 3. プレイヤー生成関数（HTML/JS埋め込み）
 # ==========================================
-def load_playlist(shop_name):
+def render_custom_player(shop_name):
     zip_file = bookshelf[shop_name]
-    new_playlist = []
+    
+    # 1. 全トラックのデータをBase64化してリストにする
+    # ※データ量が多いと少しロードに時間がかかりますが、動作は最もスムーズです
+    playlist_data = []
+    
     with zipfile.ZipFile(zip_file) as z:
         file_list = sorted(z.namelist())
         for f in file_list:
             if f.endswith(".mp3"):
                 data = z.read(f)
+                b64_data = base64.b64encode(data).decode()
                 title = f.replace(".mp3", "").replace("_", " ")
-                new_playlist.append({"title": title, "data": data})
-    st.session_state.playlist = new_playlist
-    st.session_state.current_track_idx = 0
-    st.session_state.selected_shop = shop_name
-    st.session_state.is_playing = True # 読み込んだらすぐ再生
-
-def next_track():
-    if st.session_state.current_track_idx < len(st.session_state.playlist) - 1:
-        st.session_state.current_track_idx += 1
-        st.session_state.is_playing = True # 次へ行ったら再生
-
-def prev_track():
-    if st.session_state.current_track_idx > 0:
-        st.session_state.current_track_idx -= 1
-        st.session_state.is_playing = True # 戻ったら再生
-
-def toggle_play():
-    """再生/停止を切り替え"""
-    st.session_state.is_playing = not st.session_state.is_playing
-
-def close_player():
-    st.session_state.selected_shop = None
-    st.session_state.playlist = []
-    st.session_state.current_track_idx = 0
-    st.session_state.is_playing = True
-
-# カスタムプレイヤー（autoplayを制御できるように改造）
-def play_audio_custom(audio_bytes, speed, auto_play):
-    b64 = base64.b64encode(audio_bytes).decode()
+                # JSに渡すための辞書リスト
+                playlist_data.append({
+                    "title": title,
+                    "src": f"data:audio/mp3;base64,{b64_data}"
+                })
     
-    # auto_playがTrueなら 'autoplay' 属性をつける
-    autoplay_attr = "autoplay" if auto_play else ""
-    
+    # PythonのリストをJSON文字列（JSの配列）に変換
+    playlist_json = json.dumps(playlist_data)
+
+    # 2. カスタムプレイヤーのHTML/CSS/JSを構築
+    # ここに「普通のプレイヤー」の全ロジック（連続再生など）を詰め込みます
     html_code = f"""
-    <audio id="custom_player" controls {autoplay_attr}>
-        <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
-    </audio>
+    <!DOCTYPE html>
+    <html>
+    <head>
+    <style>
+        /* プレイヤーのデザイン */
+        .player-container {{
+            border: 2px solid #e0e0e0;
+            border-radius: 15px;
+            padding: 20px;
+            background-color: #f9f9f9;
+            text-align: center;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }}
+        .track-title {{
+            font-size: 20px;
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 15px;
+            min-height: 1.5em;
+            padding: 10px;
+            background: #fff;
+            border-radius: 8px;
+            border-left: 5px solid #ff4b4b;
+        }}
+        .controls {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin: 15px 0;
+            gap: 10px;
+        }}
+        button {{
+            flex: 1;
+            padding: 15px 10px;
+            font-size: 18px;
+            font-weight: bold;
+            color: white;
+            background-color: #ff4b4b;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }}
+        button:active {{
+            opacity: 0.7;
+        }}
+        button:disabled {{
+            background-color: #ccc;
+            cursor: not-allowed;
+        }}
+        .speed-control {{
+            margin-top: 15px;
+            font-size: 14px;
+            color: #666;
+        }}
+        audio {{
+            width: 100%;
+            height: 40px;
+            margin-top: 10px;
+        }}
+        .track-list {{
+            margin-top: 20px;
+            text-align: left;
+            max-height: 200px;
+            overflow-y: auto;
+            border-top: 1px solid #ddd;
+            padding-top: 10px;
+        }}
+        .track-item {{
+            padding: 8px;
+            border-bottom: 1px solid #eee;
+            cursor: pointer;
+            font-size: 14px;
+        }}
+        .track-item.active {{
+            background-color: #ffecec;
+            font-weight: bold;
+            color: #ff4b4b;
+        }}
+    </style>
+    </head>
+    <body>
+
+    <div class="player-container">
+        <div class="track-title" id="current-title">読み込み中...</div>
+
+        <audio id="audio-player" controls></audio>
+
+        <div class="controls">
+            <button onclick="prevTrack()">⏮ 前へ</button>
+            <button onclick="togglePlay()" id="play-btn">▶ 再生</button>
+            <button onclick="nextTrack()">次へ ⏭</button>
+        </div>
+
+        <div class="speed-control">
+            再生速度: 
+            <select id="speed-select" onchange="changeSpeed()">
+                <option value="1.0">標準 (1.0x)</option>
+                <option value="1.2">少し速く (1.2x)</option>
+                <option value="1.4" selected>サクサク (1.4x)</option>
+                <option value="2.0">爆速 (2.0x)</option>
+            </select>
+        </div>
+
+        <div class="track-list" id="playlist-container"></div>
+    </div>
+
     <script>
-        var audio = document.getElementById("custom_player");
-        audio.playbackRate = {speed};
+        // Pythonから受け取ったプレイリストデータ
+        const playlist = {playlist_json};
+        let currentIdx = 0;
+        const audio = document.getElementById('audio-player');
+        const titleEl = document.getElementById('current-title');
+        const playBtn = document.getElementById('play-btn');
+        const listContainer = document.getElementById('playlist-container');
+
+        // 初期設定
+        function init() {{
+            renderPlaylist();
+            loadTrack(0);
+            changeSpeed(); // 初期の速度設定を適用
+        }}
+
+        // トラックの読み込み
+        function loadTrack(index) {{
+            if (index < 0 || index >= playlist.length) return;
+            currentIdx = index;
+            
+            // 音源セット
+            audio.src = playlist[currentIdx].src;
+            titleEl.textContent = playlist[currentIdx].title;
+            
+            // リストのハイライト更新
+            updateListHighlight();
+            
+            // 再生状態のリセットはしない（連続再生のため）
+        }}
+
+        // 再生・一時停止切り替え
+        function togglePlay() {{
+            if (audio.paused) {{
+                audio.play()
+                    .then(() => {{
+                        playBtn.textContent = "⏸ 停止";
+                    }})
+                    .catch(e => console.error(e));
+            }} else {{
+                audio.pause();
+                playBtn.textContent = "▶ 再生";
+            }}
+        }}
+
+        // 次の曲へ（自動再生付き）
+        function nextTrack() {{
+            if (currentIdx < playlist.length - 1) {{
+                loadTrack(currentIdx + 1);
+                audio.play(); // 強制再生
+                playBtn.textContent = "⏸ 停止";
+            }}
+        }}
+
+        // 前の曲へ
+        function prevTrack() {{
+            if (currentIdx > 0) {{
+                loadTrack(currentIdx - 1);
+                audio.play();
+                playBtn.textContent = "⏸ 停止";
+            }}
+        }}
+
+        // 速度変更
+        function changeSpeed() {{
+            const speed = document.getElementById('speed-select').value;
+            audio.playbackRate = parseFloat(speed);
+        }}
+
+        // ★重要：曲が終わったら自動で次へ
+        audio.onended = function() {{
+            if (currentIdx < playlist.length - 1) {{
+                nextTrack();
+            }} else {{
+                // 最後の曲が終わったら停止状態に戻す
+                playBtn.textContent = "▶ 再生";
+            }}
+        }};
+
+        // 速度設定は再生が始まるたびにリセットされることがあるので監視
+        audio.onplay = function() {{
+            changeSpeed();
+            playBtn.textContent = "⏸ 停止";
+        }};
+        
+        audio.onpause = function() {{
+            playBtn.textContent = "▶ 再生";
+        }};
+
+        // プレイリスト描画
+        function renderPlaylist() {{
+            listContainer.innerHTML = "";
+            playlist.forEach((track, idx) => {{
+                const div = document.createElement('div');
+                div.className = "track-item";
+                div.textContent = (idx + 1) + ". " + track.title;
+                div.onclick = () => {{
+                    loadTrack(idx);
+                    audio.play();
+                }};
+                div.id = "track-" + idx;
+                listContainer.appendChild(div);
+            }});
+        }}
+
+        function updateListHighlight() {{
+            // 全てのハイライトを消す
+            const items = document.querySelectorAll('.track-item');
+            items.forEach(item => item.classList.remove('active'));
+            
+            // 現在の曲をハイライト
+            const activeItem = document.getElementById("track-" + currentIdx);
+            if (activeItem) {{
+                activeItem.classList.add('active');
+                // スクロール位置調整
+                activeItem.scrollIntoView({{ behavior: 'smooth', block: 'nearest' }});
+            }}
+        }}
+
+        // 開始
+        init();
+
     </script>
+    </body>
+    </html>
     """
-    st.markdown(html_code, unsafe_allow_html=True)
+    
+    # HTMLを埋め込む（高さは適当に確保）
+    st.components.v1.html(html_code, height=600)
+
 
 # ==========================================
-# 4. 画面表示
+# 4. 画面表示切り替え
 # ==========================================
 if st.session_state.selected_shop:
     shop_name = st.session_state.selected_shop
-    playlist = st.session_state.playlist
-    current_idx = st.session_state.current_track_idx
     
-    if not playlist:
-        st.error("データなし")
-        if st.button("戻る"):
-            close_player()
-            st.rerun()
-        st.stop()
-
-    current_track = playlist[current_idx]
-
     st.caption(f"再生中: {shop_name}")
     
-    # --- コントローラー（3列に分割） ---
-    col_prev, col_pause, col_next = st.columns([1, 1, 1])
-    
-    with col_prev:
-        if st.button("⏮ 前へ", disabled=(current_idx == 0), use_container_width=True):
-            prev_track()
-            st.rerun()
-            
-    with col_pause:
-        # 再生中なら「停止ボタン」、停止中なら「再生ボタン」を表示
-        if st.session_state.is_playing:
-            label = "⏸ 停止"
-        else:
-            label = "▶ 再生"
-            
-        if st.button(label, use_container_width=True):
-            toggle_play()
-            st.rerun()
-
-    with col_next:
-        if st.button("次へ ⏭", disabled=(current_idx == len(playlist)-1), use_container_width=True):
-            next_track()
-            st.rerun()
-
-    # タイトル
-    st.markdown(f'<div class="playing-title">{current_track["title"]}</div>', unsafe_allow_html=True)
-    
-    # プレイヤー（is_playingの状態を渡す）
-    play_audio_custom(current_track["data"], playback_speed, st.session_state.is_playing)
-
-    st.write(f"Track {current_idx + 1} / {len(playlist)}")
-    
-    with st.expander("トラックリスト"):
-        for i, track in enumerate(playlist):
-            label = f"♪ {track['title']}"
-            if i == current_idx:
-                label = f"🔴 {label}"
-            if st.button(label, key=f"jump_{i}"):
-                st.session_state.current_track_idx = i
-                st.session_state.is_playing = True
-                st.rerun()
-
-    st.divider()
-    if st.button("❌ 閉じる"):
-        close_player()
+    # 閉じるボタン（これはStreamlit側の制御）
+    if st.button("❌ 閉じてリストに戻る"):
+        st.session_state.selected_shop = None
         st.rerun()
+        
+    st.markdown("---")
+    
+    # ★カスタムプレイヤーの表示★
+    try:
+        render_custom_player(shop_name)
+    except Exception as e:
+        st.error(f"プレイヤーの読み込みに失敗しました: {e}")
 
 else:
-    # リスト画面
+    # --- リスト画面 ---
     st.markdown("### 🔍 お店を探す")
     st.info("下の入力欄をタップして、キーボードのマイクボタンで話しかけてください。")
     search_query = st.text_input("お店の名前を入力", placeholder="例：カフェ")
@@ -218,5 +353,5 @@ else:
 
     for shop_name in filtered_shops:
         if st.button(f"▶ {shop_name} を聴く"):
-            load_playlist(shop_name)
+            st.session_state.selected_shop = shop_name
             st.rerun()
