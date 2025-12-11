@@ -4,7 +4,7 @@ import os
 import base64
 import json
 import glob
-import time  # ←これを一番上に移動しました！
+import time  # ←エラー修正：ここ（一番上）に移動しました！
 import streamlit.components.v1 as components
 
 # ==========================================
@@ -31,53 +31,64 @@ LIBRARY_DIR = "library"
 if not os.path.exists(LIBRARY_DIR):
     os.makedirs(LIBRARY_DIR)
 
-# --- サイドバー：管理者メニュー（本の追加・削除） ---
+# --- サイドバー：管理者メニュー（お店の追加・削除） ---
 with st.sidebar:
     st.header("🔧 管理者メニュー")
     
     # ファイルアップロード
     uploaded_zips = st.file_uploader(
-        "新しいメニュー(ZIP)を追加", 
+        "新しいお店のメニュー(ZIP)を追加", 
         type="zip", 
         accept_multiple_files=True
     )
     
     if uploaded_zips:
+        count = 0
         for zfile in uploaded_zips:
             # libraryフォルダに保存
             save_path = os.path.join(LIBRARY_DIR, zfile.name)
             with open(save_path, "wb") as f:
                 f.write(zfile.getbuffer())
-        st.success(f"{len(uploaded_zips)}冊を追加しました！")
+            count += 1
         
-        # 画面を更新してリストに反映（ここでエラーが出ていました）
+        st.success(f"{count}店舗を追加しました！")
+        
+        # 画面を更新してリストに反映
         time.sleep(1) 
         st.rerun()
 
     st.divider()
     
     # データの削除機能
-    st.subheader("🗑️ 本の整理")
-    existing_files = glob.glob(os.path.join(LIBRARY_DIR, "*.zip"))
+    st.subheader("🗑️ お店の整理")
+    # 大文字小文字に関わらずzipファイルを探す
+    files = os.listdir(LIBRARY_DIR)
+    existing_files = [f for f in files if f.lower().endswith('.zip')]
+    
     if existing_files:
         files_to_delete = st.multiselect(
-            "削除する本を選択",
-            [os.path.basename(f) for f in existing_files]
+            "削除するお店を選択",
+            existing_files
         )
-        if files_to_delete and st.button("選択した本を削除"):
+        if files_to_delete and st.button("選択したお店を削除"):
             for f in files_to_delete:
                 os.remove(os.path.join(LIBRARY_DIR, f))
             st.success("削除しました")
             time.sleep(1)
             st.rerun()
 
-# フォルダから現在の本棚リストを作成
+# フォルダから現在のお店リストを作成
 bookshelf = {}
-for file_path in glob.glob(os.path.join(LIBRARY_DIR, "*.zip")):
-    filename = os.path.basename(file_path)
-    store_name = os.path.splitext(filename)[0]
-    display_name = store_name.replace("_", " ")
-    bookshelf[display_name] = file_path
+# 再度ファイルを取得してリスト化
+files = os.listdir(LIBRARY_DIR)
+for filename in files:
+    if filename.lower().endswith('.zip'):
+        file_path = os.path.join(LIBRARY_DIR, filename)
+        # 拡張子(.zip)を取り除いて店名にする
+        store_name = os.path.splitext(filename)[0]
+        # ファイル名のアンダースコアをスペースに戻して綺麗に表示
+        display_name = store_name.replace("_", " ")
+        bookshelf[display_name] = file_path
 
 # ==========================================
 # 2. セッション状態
@@ -232,48 +243,4 @@ def render_custom_player(shop_name):
     
     st.components.v1.html(final_html, height=600)
 
-# ==========================================
-# 4. 画面表示切り替え
-# ==========================================
-
-if st.session_state.selected_shop:
-    shop_name = st.session_state.selected_shop
-    
-    st.markdown(f"### 🎧 再生中: {shop_name}")
-    
-    if st.button("⬅️ リストに戻る", type="secondary"):
-        st.session_state.selected_shop = None
-        st.rerun()
-        
-    st.markdown("---")
-    
-    try:
-        render_custom_player(shop_name)
-    except Exception as e:
-        st.error(f"エラー: {e}")
-
-else:
-    # --- リスト画面 ---
-    st.markdown("#### 🔍 本を探す")
-    st.caption("下の入力欄をタップし、キーボードのマイクで話しかけて検索できます。")
-    search_query = st.text_input("お店の名前", placeholder="例：カフェタナカ")
-
-    filtered_shops = []
-    if search_query:
-        for name in bookshelf.keys():
-            if search_query in name:
-                filtered_shops.append(name)
-    else:
-        filtered_shops = list(bookshelf.keys())
-
-    st.markdown("---")
-    st.subheader(f"📚 My Menu Book ({len(filtered_shops)}冊)")
-
-    if not bookshelf:
-        st.info("👈 左のサイドバーから、作成したZIPファイルをアップロードしてください。")
-
-    # リスト表示
-    for shop_name in filtered_shops:
-        if st.button(f"📖 {shop_name} を開く", use_container_width=True):
-            st.session_state.selected_shop = shop_name
-            st.rerun()
+# =
