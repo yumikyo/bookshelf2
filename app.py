@@ -1,194 +1,210 @@
 import streamlit as st
-import zipfile
-import base64
-import json
 import os
+import asyncio
+import json
+import nest_asyncio
+import time
+import shutil
+import zipfile
+import re
+import base64
+from datetime import datetime
+from gtts import gTTS
+import google.generativeai as genai
+from google.api_core import exceptions
+import requests
+from bs4 import BeautifulSoup
+import edge_tts
 import streamlit.components.v1 as components
+from PIL import Image
+import io
 
-# ==========================================
+# 非同期処理の適用
+nest_asyncio.apply()
+
 # ページ設定
-# ==========================================
-st.set_page_config(page_title="My Menu Book", layout="centered")
-
-st.markdown("""
-<style>
-    body { font-family: sans-serif; }
-    h1 { color: #ff4b4b; }
-    .stButton button { width: 100%; }
-</style>
-""", unsafe_allow_html=True)
-
-st.title("🎧 My Menu Book")
+st.set_page_config(page_title="Menu Player Generator", layout="wide")
 
 # ==========================================
-# 1. データ管理（メモリ保存版）
+# 1. 関数定義群
 # ==========================================
-# アップロードした本を保存する場所（セッション内）
-if 'my_library' not in st.session_state:
-    st.session_state.my_library = {}
 
-# --- サイドバー：本の追加 ---
-with st.sidebar:
-    st.header("➕ 本の追加")
-    st.info("作成したZIPファイルをここで登録します。")
-    
-    # ファイルアップロード
-    uploaded_zips = st.file_uploader(
-        "ZIPファイルをドロップ", 
-        type="zip", 
-        accept_multiple_files=True
-    )
-    
-    if uploaded_zips:
-        for zfile in uploaded_zips:
-            # ファイル名から「.zip」を取り除いて店名にする
-            store_name = os.path.splitext(zfile.name)[0].replace("_", " ")
-            # メモリ（辞書）に保存
-            st.session_state.my_library[store_name] = zfile
-            
-        st.success(f"{len(uploaded_zips)}冊を追加しました！")
+def sanitize_filename(name):
+    return re.sub(r'[\\/*?:"<>|]', "", name).replace(" ", "_").replace("　", "_")
 
-    st.divider()
-    
-    # リセットボタン
-    if st.button("🗑️ 本棚を空にする"):
-        st.session_state.my_library = {}
-        st.session_state.selected_shop = None
-        st.rerun()
-
-# ==========================================
-# 2. プレイヤー生成関数
-# ==========================================
-def render_player(shop_name):
-    zfile = st.session_state.my_library[shop_name]
-    playlist_data = []
-
+def fetch_text_from_url(url):
     try:
-        with zipfile.ZipFile(zfile) as z:
-            # ファイル名順にソート
-            file_list = sorted(z.namelist())
-            for f in file_list:
-                if f.endswith(".mp3"):
-                    data = z.read(f)
-                    b64_data = base64.b64encode(data).decode()
-                    title = f.replace(".mp3", "").replace("_", " ")
-                    
-                    playlist_data.append({
-                        "title": title,
-                        "src": f"data:audio/mp3;base64,{b64_data}"
-                    })
-    except Exception as e:
-        st.error(f"ファイルの読み込みエラー: {e}")
-        return
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers, timeout=10)
+        response.encoding = response.apparent_encoding
+        soup = BeautifulSoup(response.text, 'html.parser')
+        for s in soup(["script", "style", "header", "footer", "nav"]): s.extract()
+        text = soup.get_text(separator="\n")
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        return "\n".join(lines)
+    except: return None
 
-    playlist_json = json.dumps(playlist_data, ensure_ascii=False)
+# 音声生成（EdgeTTS -> 失敗ならGoogleTTS）
+async def generate_single_track_fast(text, filename, voice_code, rate_value):
+    # EdgeTTS
+    for attempt in range(3):
+        try:
+            comm = edge_tts.Communicate(text, voice_code, rate=rate_value)
+            await comm.save(filename)
+            if os.path.exists(filename) and os.path.getsize(filename) > 0:
+                return True
+        except:
+            await asyncio.sleep(1)
+    
+    # GoogleTTS (予備)
+    try:
+        def gtts_task():
+            tts = gTTS(text=text, lang='ja')
+            tts.save(filename)
+        await asyncio.to_thread(gtts_task)
+        return True
+    except:
+        return False
 
-    # HTMLテンプレート
-    html_template = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-    <style>
-        .player-container { border: 2px solid #e0e0e0; border-radius: 15px; padding: 20px; background-color: #f9f9f9; text-align: center; }
-        .track-title { font-size: 20px; font-weight: bold; color: #333; margin-bottom: 15px; padding: 10px; background: #fff; border-radius: 8px; border-left: 5px solid #ff4b4b; }
-        .controls { display: flex; gap: 10px; margin: 15px 0; }
-        button { flex: 1; padding: 15px; font-size: 18px; font-weight: bold; color: white; background-color: #ff4b4b; border: none; border-radius: 8px; cursor: pointer; }
-        .track-list { margin-top: 20px; text-align: left; max-height: 250px; overflow-y: auto; border-top: 1px solid #ddd; padding-top: 10px; }
-        .track-item { padding: 10px; border-bottom: 1px solid #eee; cursor: pointer; }
-        .track-item.active { background-color: #ffecec; font-weight: bold; color: #ff4b4b; }
-    </style>
-    </head>
-    <body>
-    <div class="player-container">
-        <div class="track-title" id="title">Loading...</div>
-        <audio id="audio" controls style="width:100%"></audio>
-        <div class="controls">
-            <button onclick="prev()">⏮</button>
-            <button onclick="toggle()" id="play-btn">▶</button>
-            <button onclick="next()">⏭</button>
-        </div>
-        <div style="text-align:center; margin-top:10px;">
-            速度: <select id="speed" onchange="spd()"><option value="1.0">1.0</option><option value="1.4" selected>1.4</option><option value="2.0">2.0</option></select>
-        </div>
-        <div class="track-list" id="list"></div>
-    </div>
+# 一括並列処理マネージャー
+async def process_all_tracks_fast(menu_data, output_dir, voice_code, rate_value, progress_bar):
+    tasks = []
+    track_info_list = []
+
+    for i, track in enumerate(menu_data):
+        safe_title = sanitize_filename(track['title'])
+        filename = f"{i+1:02}_{safe_title}.mp3"
+        save_path = os.path.join(output_dir, filename)
+        
+        speech_text = track['text']
+        if i > 0: speech_text = f"{i+1}、{track['title']}。\n{track['text']}"
+        
+        tasks.append(generate_single_track_fast(speech_text, save_path, voice_code, rate_value))
+        track_info_list.append({"title": track['title'], "path": save_path})
+
+    total = len(tasks)
+    completed = 0
+    
+    for task in asyncio.as_completed(tasks):
+        await task
+        completed += 1
+        progress_bar.progress(completed / total)
+    
+    return track_info_list
+
+# HTMLプレイヤー生成（安全な .replace 方式）
+def create_standalone_html_player(store_name, menu_data):
+    playlist_js = []
+    for track in menu_data:
+        file_path = track['path']
+        if os.path.exists(file_path):
+            with open(file_path, "rb") as f:
+                b64_data = base64.b64encode(f.read()).decode()
+                playlist_js.append({
+                    "title": track['title'],
+                    "src": f"data:audio/mp3;base64,{b64_data}"
+                })
+    
+    playlist_json_str = json.dumps(playlist_js, ensure_ascii=False)
+    
+    html_template = """<!DOCTYPE html>
+<html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>__STORE_NAME__</title>
+<style>body{font-family:sans-serif;background:#f4f4f4;margin:0;padding:20px;}.c{max-width:600px;margin:0 auto;background:#fff;padding:20px;border-radius:15px;box-shadow:0 2px 10px rgba(0,0,0,0.1);}
+h1{text-align:center;font-size:1.5em;color:#333;}.box{background:#fff5f5;border:2px solid #ff4b4b;border-radius:10px;padding:15px;text-align:center;margin-bottom:20px;}
+.ti{font-size:1.3em;font-weight:bold;color:#ff4b4b;}.ctrl{display:flex;gap:10px;margin:15px 0;}
+button{flex:1;padding:15px;font-size:1.2em;font-weight:bold;color:#fff;background:#ff4b4b;border:none;border-radius:10px;cursor:pointer;}
+.lst{border-top:1px solid #eee;padding-top:10px;}.itm{padding:12px;border-bottom:1px solid #eee;cursor:pointer;}.itm.active{background:#ffecec;color:#ff4b4b;font-weight:bold;}</style></head>
+<body><div class="c"><h1>🎧 __STORE_NAME__</h1><div class="box"><div class="ti" id="ti">Loading...</div></div><audio id="au" style="width:100%"></audio>
+<div class="ctrl"><button onclick="prev()">⏮</button><button onclick="toggle()" id="pb">▶</button><button onclick="next()">⏭</button></div>
+<div style="text-align:center;margin-bottom:15px;">速度: <select id="sp" onchange="csp()"><option value="1.0">1.0</option><option value="1.4" selected>1.4</option><option value="2.0">2.0</option></select></div>
+<div id="ls" class="lst"></div></div>
+<script>const pl=__PLAYLIST_JSON__;let idx=0;const au=document.getElementById('au');const ti=document.getElementById('ti');const pb=document.getElementById('pb');
+function init(){ren();ld(0);csp();}
+function ld(i){idx=i;au.src=pl[idx].src;ti.innerText=pl[idx].title;ren();csp();}
+function toggle(){if(au.paused){au.play();pb.innerText="⏸";}else{au.pause();pb.innerText="▶";}}
+function next(){if(idx<pl.length-1){ld(idx+1);au.play();pb.innerText="⏸";}}
+function prev(){if(idx>0){ld(idx-1);au.play();pb.innerText="⏸";}}
+function csp(){au.playbackRate=parseFloat(document.getElementById('sp').value);}
+au.onended=function(){if(idx<pl.length-1)next();else pb.innerText="▶";};
+function ren(){const d=document.getElementById('ls');d.innerHTML="";pl.forEach((t,i)=>{const m=document.createElement('div');m.className="itm "+(i===idx?"active":"");m.innerText=(i+1)+". "+t.title;m.onclick=()=>{ld(i);au.play();pb.innerText="⏸";};d.appendChild(m);});}
+init();</script></body></html>"""
+
+    return html_template.replace("__STORE_NAME__", store_name).replace("__PLAYLIST_JSON__", playlist_json_str)
+
+# プレビュー表示
+def render_preview_player(tracks):
+    playlist_data = []
+    for track in tracks:
+        if os.path.exists(track['path']):
+            with open(track['path'], "rb") as f:
+                b64 = base64.b64encode(f.read()).decode()
+                playlist_data.append({"title": track['title'],"src": f"data:audio/mp3;base64,{b64}"})
+    playlist_json = json.dumps(playlist_data)
+    
+    html_template = """<!DOCTYPE html><html><head><style>
+    body{margin:0;padding:0;font-family:sans-serif;}
+    .p-box{border:2px solid #e0e0e0;border-radius:12px;padding:15px;background:#fcfcfc;text-align:center;}
+    .t-ti{font-size:18px;font-weight:bold;color:#333;margin-bottom:10px;padding:10px;background:#fff;border-radius:8px;border-left:5px solid #ff4b4b;}
+    .ctrls{display:flex;gap:5px;margin:10px 0;}
+    button{flex:1;padding:10px;font-weight:bold;color:#fff;background:#ff4b4b;border:none;border-radius:5px;cursor:pointer;}
+    .lst{text-align:left;max-height:150px;overflow-y:auto;border-top:1px solid #eee;margin-top:10px;padding-top:5px;}
+    .it{padding:6px;border-bottom:1px solid #eee;cursor:pointer;font-size:14px;}.it.active{color:#ff4b4b;font-weight:bold;background:#ffecec;}
+    </style></head><body><div class="p-box"><div id="ti" class="t-ti">...</div><audio id="au" controls style="width:100%;height:30px;"></audio>
+    <div class="ctrls"><button onclick="pv()">⏮</button><button onclick="tg()" id="pb">▶</button><button onclick="nx()">⏭</button></div>
+    <div style="font-size:12px;color:#666;">速度:<select id="sp" onchange="sp()"><option value="1.0">1.0</option><option value="1.4" selected>1.4</option><option value="2.0">2.0</option></select></div>
+    <div id="ls" class="lst"></div></div>
     <script>
-        const pl = __PLAYLIST__;
-        let idx = 0;
-        const au = document.getElementById('audio');
-        const ti = document.getElementById('title');
-        const pb = document.getElementById('play-btn');
-        const ls = document.getElementById('list');
-
-        function init() { render(); load(0); spd(); }
-        function load(i) { idx = i; au.src = pl[idx].src; ti.innerText = pl[idx].title; highlight(); spd(); }
-        function toggle() { au.paused ? (au.play(), pb.innerText="⏸") : (au.pause(), pb.innerText="▶"); }
-        function next() { if(idx < pl.length-1) { load(idx+1); au.play(); pb.innerText="⏸"; } }
-        function prev() { if(idx > 0) { load(idx-1); au.play(); pb.innerText="⏸"; } }
-        function spd() { au.playbackRate = parseFloat(document.getElementById('speed').value); }
-        
-        au.onended = function() { idx < pl.length-1 ? next() : pb.innerText="▶"; };
-        
-        function render() {
-            ls.innerHTML = "";
-            pl.forEach((t, i) => {
-                const d = document.createElement('div');
-                d.className = "track-item";
-                d.id = "tr-" + i;
-                d.innerText = (i+1) + ". " + t.title;
-                d.onclick = () => { load(i); au.play(); pb.innerText="⏸"; };
-                ls.appendChild(d);
-            });
-        }
-        function highlight() {
-            document.querySelectorAll('.track-item').forEach(e => e.classList.remove('active'));
-            const el = document.getElementById("tr-" + idx);
-            if(el) { el.classList.add('active'); el.scrollIntoView({behavior:'smooth', block:'nearest'}); }
-        }
-        init();
-    </script>
-    </body>
-    </html>
-    """
+    const pl=__PLAYLIST__;let x=0;const au=document.getElementById('au');const ti=document.getElementById('ti');const pb=document.getElementById('pb');const ls=document.getElementById('ls');
+    function init(){rn();ld(0);sp();}
+    function ld(i){x=i;au.src=pl[x].src;ti.innerText=pl[x].title;rn();sp();}
+    function tg(){if(au.paused){au.play();pb.innerText="⏸";}else{au.pause();pb.innerText="▶";}}
+    function nx(){if(x<pl.length-1){ld(x+1);au.play();pb.innerText="⏸";}}
+    function pv(){if(x>0){ld(x-1);au.play();pb.innerText="⏸";}}
+    function sp(){au.playbackRate=parseFloat(document.getElementById('sp').value);}
+    au.onended=function(){if(x<pl.length-1)nx();else pb.innerText="▶";};
+    function rn(){ls.innerHTML="";pl.forEach((t,i)=>{const d=document.createElement('div');d.className="it "+(i===x?"active":"");d.innerText=(i+1)+". "+t.title;d.onclick=()=>{ld(i);au.play();pb.innerText="⏸";};ls.appendChild(d);});}
+    init();</script></body></html>"""
     
     final_html = html_template.replace("__PLAYLIST__", playlist_json)
-    st.components.v1.html(final_html, height=550)
+    components.html(final_html, height=400)
+
 
 # ==========================================
-# 3. 画面表示
+# 2. UI設定
 # ==========================================
-if 'selected_shop' not in st.session_state:
-    st.session_state.selected_shop = None
+with st.sidebar:
+    st.header("🔧 設定")
+    if "GEMINI_API_KEY" in st.secrets:
+        api_key = st.secrets["GEMINI_API_KEY"]
+        st.success("🔑 APIキー認証済み")
+    else:
+        api_key = st.text_input("Gemini APIキー", type="password")
+    
+    valid_models = []
+    target_model_name = None
+    if api_key:
+        try:
+            genai.configure(api_key=api_key)
+            all_models = list(genai.list_models())
+            valid_models = [m.name for m in all_models if 'generateContent' in m.supported_generation_methods]
+        except: pass
+    if valid_models:
+        default_idx = next((i for i, n in enumerate(valid_models) if "flash" in n), 0)
+        target_model_name = st.selectbox("使用するAIモデル", valid_models, index=default_idx)
+    
+    st.divider()
+    st.subheader("🗣️ 音声設定")
+    voice_options = {"女性（七海）": "ja-JP-NanamiNeural", "男性（慶太）": "ja-JP-KeitaNeural"}
+    selected_voice = st.selectbox("声の種類", list(voice_options.keys()))
+    voice_code = voice_options[selected_voice]
+    rate_value = "+40%"
 
-# --- 再生画面 ---
-if st.session_state.selected_shop:
-    shop_name = st.session_state.selected_shop
-    st.markdown(f"### 🎧 再生中: {shop_name}")
-    
-    if st.button("⬅️ リストに戻る", use_container_width=True):
-        st.session_state.selected_shop = None
-        st.rerun()
-    
-    st.markdown("---")
-    render_player(shop_name)
+st.title("🎧 Menu Player Generator")
+st.markdown("##### 視覚障害のある方のための「聴くメニュー」生成アプリ")
 
-# --- リスト画面 ---
-else:
-    st.markdown("#### 📚 本棚")
-    
-    # 検索機能
-    search_query = st.text_input("🔍 お店を検索", placeholder="例: カフェ")
-    
-    # 本棚が空の場合
-    if not st.session_state.my_library:
-        st.info("👈 左のサイドバーにZIPファイルをアップロードしてください。")
-    
-    # リスト表示
-    shop_list = list(st.session_state.my_library.keys())
-    if search_query:
-        shop_list = [name for name in shop_list if search_query in name]
+if 'captured_images' not in st.session_state: st.session_state.captured_images = []
+if 'camera_key' not in st.session_state: st.session_state.camera_key = 0
+if 'generated_result' not in st.session_state: st.session_state.generated_result = None
+if 'show_camera' not in st.session_state: st.session_state.show_camera = False
 
-    for shop_name in shop_list:
-        if st.button(f"📖 {shop_name} を開く", use_container_width=True):
-            st.session_state.selected_shop = shop_name
-            st.rerun()
+# Step 1
