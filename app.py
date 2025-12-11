@@ -15,7 +15,7 @@ st.markdown("""
     .stButton > button {
         width: 100%;
         height: 3.5em;
-        font-size: 22px !important;
+        font-size: 20px !important;
         font-weight: bold;
         margin-bottom: 10px;
         border-radius: 10px;
@@ -32,7 +32,6 @@ st.markdown("""
         margin-bottom: 20px;
         background-color: #fff5f5;
     }
-    /* カスタムプレイヤーの見た目調整 */
     audio {
         width: 100%;
         margin-bottom: 20px;
@@ -52,11 +51,9 @@ with st.expander("管理者メニュー：ZIPファイルの追加"):
         accept_multiple_files=True
     )
 
-# --- 速度設定のスライダー（ユーザーが調整可能にする） ---
 st.sidebar.header("🔊 設定")
-playback_speed = st.sidebar.slider("再生速度", 0.5, 2.0, 1.4, 0.1) # デフォルト1.4
+playback_speed = st.sidebar.slider("再生速度", 0.5, 2.0, 1.4, 0.1)
 
-# アップロードファイルの辞書化
 bookshelf = {}
 if uploaded_zips:
     for zfile in uploaded_zips:
@@ -73,6 +70,9 @@ if 'current_track_idx' not in st.session_state:
     st.session_state.current_track_idx = 0
 if 'playlist' not in st.session_state:
     st.session_state.playlist = [] 
+# 自動再生の状態管理（Trueなら再生、Falseなら停止）
+if 'is_playing' not in st.session_state:
+    st.session_state.is_playing = True
 
 # ==========================================
 # 3. ロジック関数
@@ -90,28 +90,37 @@ def load_playlist(shop_name):
     st.session_state.playlist = new_playlist
     st.session_state.current_track_idx = 0
     st.session_state.selected_shop = shop_name
+    st.session_state.is_playing = True # 読み込んだらすぐ再生
 
 def next_track():
     if st.session_state.current_track_idx < len(st.session_state.playlist) - 1:
         st.session_state.current_track_idx += 1
+        st.session_state.is_playing = True # 次へ行ったら再生
 
 def prev_track():
     if st.session_state.current_track_idx > 0:
         st.session_state.current_track_idx -= 1
+        st.session_state.is_playing = True # 戻ったら再生
+
+def toggle_play():
+    """再生/停止を切り替え"""
+    st.session_state.is_playing = not st.session_state.is_playing
 
 def close_player():
     st.session_state.selected_shop = None
     st.session_state.playlist = []
     st.session_state.current_track_idx = 0
+    st.session_state.is_playing = True
 
-# ★★★ ここが重要！カスタムプレイヤー関数 ★★★
-def play_audio_custom(audio_bytes, speed):
-    # バイナリデータをBase64テキストに変換
+# カスタムプレイヤー（autoplayを制御できるように改造）
+def play_audio_custom(audio_bytes, speed, auto_play):
     b64 = base64.b64encode(audio_bytes).decode()
     
-    # HTMLのaudioタグを直接書く（JavaScriptで速度制御）
+    # auto_playがTrueなら 'autoplay' 属性をつける
+    autoplay_attr = "autoplay" if auto_play else ""
+    
     html_code = f"""
-    <audio id="custom_player" controls autoplay>
+    <audio id="custom_player" controls {autoplay_attr}>
         <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
     </audio>
     <script>
@@ -140,23 +149,35 @@ if st.session_state.selected_shop:
 
     st.caption(f"再生中: {shop_name}")
     
-    # コントローラー
-    col_prev, col_next = st.columns(2)
+    # --- コントローラー（3列に分割） ---
+    col_prev, col_pause, col_next = st.columns([1, 1, 1])
+    
     with col_prev:
         if st.button("⏮ 前へ", disabled=(current_idx == 0), use_container_width=True):
             prev_track()
-            st.rerun()    
+            st.rerun()
+            
+    with col_pause:
+        # 再生中なら「停止ボタン」、停止中なら「再生ボタン」を表示
+        if st.session_state.is_playing:
+            label = "⏸ 停止"
+        else:
+            label = "▶ 再生"
+            
+        if st.button(label, use_container_width=True):
+            toggle_play()
+            st.rerun()
+
     with col_next:
-        if st.button("次へ ⏭", disabled=(current_idx == len(playlist)-1), use_container_width=True, type="primary"):
+        if st.button("次へ ⏭", disabled=(current_idx == len(playlist)-1), use_container_width=True):
             next_track()
             st.rerun()
 
-    # タイトル表示
+    # タイトル
     st.markdown(f'<div class="playing-title">{current_track["title"]}</div>', unsafe_allow_html=True)
     
-    # ★★★ ここを標準のst.audioからカスタム関数に変更 ★★★
-    # デフォルトでplayback_speed(1.4)が渡されます
-    play_audio_custom(current_track["data"], playback_speed)
+    # プレイヤー（is_playingの状態を渡す）
+    play_audio_custom(current_track["data"], playback_speed, st.session_state.is_playing)
 
     st.write(f"Track {current_idx + 1} / {len(playlist)}")
     
@@ -167,6 +188,7 @@ if st.session_state.selected_shop:
                 label = f"🔴 {label}"
             if st.button(label, key=f"jump_{i}"):
                 st.session_state.current_track_idx = i
+                st.session_state.is_playing = True
                 st.rerun()
 
     st.divider()
@@ -175,7 +197,7 @@ if st.session_state.selected_shop:
         st.rerun()
 
 else:
-    # 検索・リスト画面
+    # リスト画面
     st.markdown("### 🔍 お店を探す")
     st.info("下の入力欄をタップして、キーボードのマイクボタンで話しかけてください。")
     search_query = st.text_input("お店の名前を入力", placeholder="例：カフェ")
