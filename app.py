@@ -174,4 +174,7 @@ else:
     
     for shop_name in shop_list:
         # リストのボタン表示を店名だけにシンプル化
-        if st.button(f"📖 {shop
+        # 【修正箇所】ここが途切れていたため修正しました
+        if st.button(f"📖 {shop_name}", use_container_width=True):
+            st.session_state.selected_shop = shop_name
+            st.rerun()
